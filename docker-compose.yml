@@ -1,9 +1,9 @@
 services:
-  browser:
+  playwright:
     build: .
     ports:
       - "3000:3000"
-  db:
+  postgres:
     image: postgres:18
     environment:
       POSTGRES_USER: pravda
