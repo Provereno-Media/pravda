@@ -54,15 +54,23 @@ class SnapshotOut(BaseModel):
     headers: list[HeaderOut]
 
 
+class HealthOut(BaseModel):
+    status: str
+
+
+class SnapshotCreated(BaseModel):
+    id: uuid.UUID
+
+
 # --- Endpoints ---
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok"}
+async def health() -> HealthOut:
+    return HealthOut(status="ok")
 
 
-@app.post("/snapshots")
+@app.post("/snapshots", response_model=SnapshotCreated)
 async def create_snapshot(
     body: SnapshotCreate,
     session: AsyncSession = Depends(get_session),
@@ -83,7 +91,7 @@ async def create_snapshot(
 
         await context.close()
 
-    return {"id": str(snapshot.id)}
+    return {"id": snapshot.id}
 
 
 @app.get("/snapshots/{snapshot_id}")
