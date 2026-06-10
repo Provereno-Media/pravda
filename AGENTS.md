@@ -17,11 +17,14 @@
 ## Project structure
 
 ```
-Dockerfile              # Chrome + xvfb + run-server
-docker-compose.yml      # single "browser" service
+.env                     # environment-specific config (not committed)
+.env.example             # template with defaults (committed)
+Dockerfile               # Chrome + xvfb + run-server
+docker-compose.yml       # single "browser" service
 pravda/
   __init__.py
-  __main__.py           # entry point
+  __main__.py            # entry point
+  constants.py           # loads .env, defines constants
 ```
 
 ## Conventions
@@ -31,7 +34,9 @@ pravda/
 - Playwright browsers are NOT installed locally — they live in the Docker container. The `playwright` Python package is a client only.
 - Keep imports at the top of each file. No lazy imports unless there's a real cost.
 - Use `pathlib.Path` for file paths, not string manipulation.
-- No configuration files, no environment variables, no settings modules for now. Constants at the top of the file that uses them.
+- Environment-specific config goes in `.env`, loaded via `python-dotenv` in `pravda/constants.py`.
+- True constants (paths, format strings, etc.) live in `pravda/constants.py`.
+- Access config through `constants.py`, never call `os.environ` or `dotenv` elsewhere.
 
 ## Running
 
@@ -57,7 +62,7 @@ Don't install playwright browsers locally (`playwright install`). The browser li
 ## What not to do
 
 - Don't add CLI frameworks (click, typer, argparse) yet.
-- Don't add configuration management (pydantic-settings, .env files) yet.
+- Don't add configuration management beyond .env + constants.py (no pydantic-settings).
 - Don't add logging frameworks yet. `print()` is fine.
 - Don't add type stubs or mypy config yet.
 - Don't abstract the browser connection behind a wrapper class yet.

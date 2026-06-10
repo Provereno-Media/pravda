@@ -3,15 +3,16 @@ import json
 
 from playwright.async_api import async_playwright
 
-BROWSER_WS = "ws://localhost:3000"
-LAUNCH_OPTIONS = {"channel": "chrome", "headless": False}
+from pravda.constants import BROWSER_CHANNEL, BROWSER_HEADLESS, BROWSER_WS_URL
 
 
 async def main():
+    launch_options = json.dumps({"channel": BROWSER_CHANNEL, "headless": BROWSER_HEADLESS})
+
     async with async_playwright() as pw:
         browser = await pw.chromium.connect(
-            BROWSER_WS,
-            headers={"x-playwright-launch-options": json.dumps(LAUNCH_OPTIONS)},
+            BROWSER_WS_URL,
+            headers={"x-playwright-launch-options": launch_options},
         )
         page = await browser.new_page()
         await page.goto("https://example.com")
