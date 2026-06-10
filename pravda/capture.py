@@ -14,7 +14,7 @@ async def capture_page(page: Page, url: str, session: AsyncSession) -> Snapshot:
 
     Returns the ``Snapshot`` row (flushed, not committed — caller decides).
     """
-    response = await page.goto(url, wait_until="networkidle")
+    response = await page.goto(url, wait_until="load")
     http_status = response.status if response else 0
 
     # Collect response headers

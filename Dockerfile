@@ -4,6 +4,10 @@ FROM mcr.microsoft.com/playwright:v1.60.0-noble
 # Install it globally so xvfb-run doesn't hang on npx download.
 RUN npm install -g playwright@1.60.0
 
+# Install Google Chrome and its system dependencies.
+# The base image has Chromium but not branded Chrome.
+RUN playwright install --with-deps chrome
+
 # Run in headed mode inside a virtual framebuffer.
 # Headed Chrome avoids headless-detection by websites.
 CMD ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1920x1080x24", \
