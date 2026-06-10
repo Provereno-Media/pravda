@@ -1,6 +1,11 @@
 # Pravda
 
-Pravda is the evidence layer. It uses Playwright to capture and store MHTML archives and full-page screenshots of web pages, along with response headers and snapshot metadata. It turns live web pages into durable, addressable evidence that can be inspected, diffed, and reasoned over long after the original page has changed.
+Pravda is the evidence layer — a service that other services build on. It uses Playwright to capture and store MHTML archives and full-page screenshots of web pages, along with response headers and snapshot metadata. It turns live web pages into durable, addressable evidence that can be inspected, diffed, and reasoned over long after the original page has changed.
+
+It exposes two interfaces:
+
+- **FastAPI** — HTTP API for service-to-service access.
+- **Typer** — CLI for local usage.
 
 ## What it does (v0)
 
@@ -26,7 +31,9 @@ docker compose up -d --build browser
 ## Usage
 
 ```bash
-uv run python -m pravda
-```
+# Run the API server
+uv run uvicorn pravda.api:app --reload
 
-This connects to the browser container, navigates to `https://example.com`, and saves a screenshot.
+# CLI usage
+uv run pravda --help
+```
