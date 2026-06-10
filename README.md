@@ -27,7 +27,7 @@ docker compose up -d --build browser
 
 ```bash
 # Run the API server
-uv run uvicorn pravda.api:app --reload
+uv run uvicorn pravda.api:app --reload --env-file .env
 
 
 ```

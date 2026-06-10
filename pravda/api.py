@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import uuid
@@ -14,6 +15,7 @@ from pravda.db import Snapshot, get_session, init_db
 
 BROWSER_CHANNEL = "chrome"
 BROWSER_WS_URL = os.environ["BROWSER_WS_URL"]
+USER_AGENT = os.environ["USER_AGENT"]
 
 logger = logging.getLogger(__name__)
 
@@ -69,10 +71,12 @@ async def create_snapshot(
         browser = await p.chromium.connect(
             BROWSER_WS_URL,
             headers={
-                "x-playwright-launch-options": f'{{"channel": "{BROWSER_CHANNEL}"}}'
+                "x-playwright-launch-options": json.dumps(
+                    {"channel": BROWSER_CHANNEL, "headless": False}
+                ),
             },
         )
-        context = await browser.new_context()
+        context = await browser.new_context(user_agent=USER_AGENT)
         page = await context.new_page()
 
         snapshot = await capture_page(page, body.url, session)

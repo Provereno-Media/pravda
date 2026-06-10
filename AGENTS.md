@@ -26,8 +26,6 @@ Dockerfile               # Chrome + xvfb + run-server
 docker-compose.yml       # single "browser" service
 pravda/
   __init__.py
-  __main__.py            # entry point
-  constants.py           # loads .env, defines constants
 ```
 
 ## Conventions
@@ -37,9 +35,9 @@ pravda/
 - Playwright browsers are NOT installed locally — they live in the Docker container. The `playwright` Python package is a client only.
 - Keep imports at the top of each file. No lazy imports unless there's a real cost.
 - Use `pathlib.Path` for file paths, not string manipulation.
-- Environment-specific config goes in `.env`, loaded via `python-dotenv` in `pravda/constants.py`.
-- True constants (paths, format strings, etc.) live in `pravda/constants.py`.
-- Access config through `constants.py`, never call `os.environ` or `dotenv` elsewhere.
+- Environment-specific config goes in `.env`, loaded by uvicorn via `--env-file`.
+- Read env vars with `os.environ` in the module that needs them.
+- True constants (paths, format strings, etc.) live in the module that uses them.
 - Use the Python `logging` module for logging. Get loggers with `logging.getLogger(__name__)`.
 - Don't run git commands. The user manages commits, branching, etc.
 
@@ -50,7 +48,7 @@ pravda/
 docker compose up -d browser
 
 # Run the API server
-uv run uvicorn pravda.api:app --reload
+uv run uvicorn pravda.api:app --reload --env-file .env
 
 # Stop the browser container
 docker compose down
