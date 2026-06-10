@@ -23,7 +23,7 @@ Pravda is the evidence layer — a service that other services build on. It capt
 .env                     # environment-specific config (not committed)
 .env.example             # template with defaults (committed)
 Dockerfile               # Chrome + xvfb + run-server
-docker-compose.yml       # single "browser" service
+docker-compose.yml       # single "playwright" service
 pravda/
   __init__.py
 ```
@@ -44,13 +44,13 @@ pravda/
 ## Running
 
 ```bash
-# Start the browser container
-docker compose up -d browser
+# Start the browser and database containers
+docker compose up -d
 
 # Run the API server
 uv run uvicorn pravda.api:app --reload --env-file .env
 
-# Stop the browser container
+# Stop all containers
 docker compose down
 ```
 
