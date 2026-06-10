@@ -8,7 +8,6 @@ Pravda is the evidence layer — a service that other services build on. It uses
 - Stores response headers
 - Tracks URLs and their snapshot history
 - Uses content-addressed storage
-- Supports `ETag` / `Last-Modified` for HTTP 304 conditional fetching
 - Runs Chrome (not Chromium) in a virtual framebuffer for realistic rendering
 
 ## Setup
