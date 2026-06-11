@@ -39,7 +39,7 @@ pravda/
 - Read env vars with `os.environ` in the module that needs them.
 - True constants (paths, format strings, etc.) live in the module that uses them.
 - Use the Python `logging` module for logging. Get loggers with `logging.getLogger(__name__)`.
-- Don't run git commands. The user manages commits, branching, etc.
+- The user manages git commits, branching, etc.
 
 ## Storage and access model
 
