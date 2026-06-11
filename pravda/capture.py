@@ -62,6 +62,7 @@ async def capture_page(
 
     # --- CDP session: lifecycle tracking + MHTML capture ----------------
     cdp = await page.context.new_cdp_session(page)
+    await cdp.send("Page.enable", {})
     await cdp.send("Page.setLifecycleEventsEnabled", {"enabled": True})
     cdp.on(
         "Page.lifecycleEvent",
