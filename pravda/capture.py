@@ -16,32 +16,6 @@ NAV_TIMEOUT_MS = 30_000
 # These can hang if the page is in a half-loaded state.
 CAPTURE_TIMEOUT_MS = 15_000
 
-# Canonical ordering of CDP lifecycle events. Each event implies all previous
-# ones have also fired. Used to decide whether a timed-out page has enough
-# content worth capturing.
-_LIFECYCLE_ORDER = [
-    "init",
-    "commit",
-    "DOMContentLoaded",
-    "firstPaint",
-    "firstContentfulPaint",
-    "load",
-    "networkAlmostIdle",
-    "networkIdle",
-]
-
-# Minimum lifecycle event required to attempt captures after a timeout.
-_MINIMUM_LIFECYCLE = "DOMContentLoaded"
-
-
-def _lifecycle_reached(events: list[str], target: str) -> bool:
-    """Return *True* if *events* contains *target* or any event after it."""
-    target_idx = _LIFECYCLE_ORDER.index(target)
-    return any(
-        e in _LIFECYCLE_ORDER and _LIFECYCLE_ORDER.index(e) >= target_idx
-        for e in events
-    )
-
 
 async def capture_page(
     page: Page,
@@ -100,9 +74,7 @@ async def capture_page(
     # --- Capture page content -------------------------------------------
     # If the condition timed out, only capture when the page reached at
     # least DOMContentLoaded — otherwise there is no meaningful content.
-    should_capture = condition_met or _lifecycle_reached(
-        lifecycle_events, _MINIMUM_LIFECYCLE
-    )
+    should_capture = condition_met or "DOMContentLoaded" in lifecycle_events
 
     mhtml_bytes: bytes | None = None
     screenshot_bytes: bytes | None = None
@@ -142,9 +114,8 @@ async def capture_page(
             logger.warning("Timeout capturing inner text for %s", url)
     else:
         logger.warning(
-            "Skipping captures for %s — page never reached %s",
+            "Skipping captures for %s — page never reached DOMContentLoaded",
             url,
-            _MINIMUM_LIFECYCLE,
         )
 
     await cdp.detach()

@@ -111,36 +111,3 @@ async def test_capture_page_timeout_no_lifecycle_skips_captures(db_session):
 
     # No lifecycle events fired, so captures were skipped
     assert loaded.contents == []
-
-
-# --- _lifecycle_reached unit tests ---
-
-
-def test_lifecycle_reached_domcontentloaded_suffices():
-    from pravda.capture import _lifecycle_reached
-
-    events = ["init", "commit", "DOMContentLoaded"]
-    assert _lifecycle_reached(events, "DOMContentLoaded") is True
-
-
-def test_lifecycle_reached_later_event_implies_earlier():
-    from pravda.capture import _lifecycle_reached
-
-    events = ["init", "commit", "DOMContentLoaded", "firstPaint"]
-    assert _lifecycle_reached(events, "DOMContentLoaded") is True
-    assert _lifecycle_reached(events, "firstPaint") is True
-    assert _lifecycle_reached(events, "load") is False
-
-
-def test_lifecycle_reached_empty_list():
-    from pravda.capture import _lifecycle_reached
-
-    assert _lifecycle_reached([], "DOMContentLoaded") is False
-
-
-def test_lifecycle_reached_only_init_and_commit():
-    from pravda.capture import _lifecycle_reached
-
-    events = ["init", "commit"]
-    assert _lifecycle_reached(events, "DOMContentLoaded") is False
-    assert _lifecycle_reached(events, "commit") is True
