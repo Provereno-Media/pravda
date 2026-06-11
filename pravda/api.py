@@ -3,15 +3,13 @@ import logging
 import os
 import uuid
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI
 from playwright.async_api import async_playwright
 from pydantic import BaseModel
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from pravda.capture import capture_page
-from pravda.db import Snapshot, get_session, init_db
+from pravda.db import get_session, init_db
 from pravda.storage import content_path
 
 BROWSER_CHANNEL = "chrome"
@@ -58,10 +56,6 @@ class HealthOut(BaseModel):
     status: str
 
 
-class SnapshotCreated(BaseModel):
-    id: uuid.UUID
-
-
 # --- Endpoints ---
 
 
@@ -70,11 +64,11 @@ async def health() -> HealthOut:
     return HealthOut(status="ok")
 
 
-@app.post("/snapshots", response_model=SnapshotCreated)
+@app.post("/snapshots", response_model=SnapshotOut)
 async def create_snapshot(
     body: SnapshotCreate,
     session: AsyncSession = Depends(get_session),
-) -> dict[str, str]:
+) -> SnapshotOut:
     async with async_playwright() as p:
         browser = await p.chromium.connect(
             BROWSER_WS_URL,
@@ -92,25 +86,6 @@ async def create_snapshot(
         await context.close()
 
     await session.commit()
-    return {"id": snapshot.id}
-
-
-@app.get("/snapshots/{snapshot_id}")
-async def get_snapshot(
-    snapshot_id: uuid.UUID,
-    session: AsyncSession = Depends(get_session),
-) -> SnapshotOut:
-    stmt = (
-        select(Snapshot)
-        .where(Snapshot.id == snapshot_id)
-        .options(selectinload(Snapshot.contents), selectinload(Snapshot.headers))
-    )
-    result = await session.execute(stmt)
-    snapshot = result.scalar_one_or_none()
-
-    if snapshot is None:
-        raise HTTPException(status_code=404, detail="Snapshot not found")
-
     return SnapshotOut(
         id=snapshot.id,
         url=snapshot.url,
