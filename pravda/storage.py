@@ -3,10 +3,16 @@ import logging
 import os
 
 import fsspec
+from fsspec.implementations.asyn_wrapper import AsyncFileSystemWrapper
 
 logger = logging.getLogger(__name__)
 
 fs, _base_path = fsspec.core.url_to_fs(os.environ["STORAGE_BASE_PATH"])
+# Remote backends (gcs, s3) are natively async; local is sync, so wrap it.
+# Either way we drive blob I/O through the async (`_`-prefixed) methods so a
+# slow write never blocks the event loop and stalls other in-flight captures.
+if not fs.async_impl:
+    fs = AsyncFileSystemWrapper(fs)
 
 
 def content_path(hash_hex: str) -> str:
@@ -18,13 +24,12 @@ async def put_blob(data: bytes) -> str:
     hash_hex = hashlib.sha256(data).hexdigest()
     path = content_path(hash_hex)
 
-    if fs.exists(path):
+    if await fs._exists(path):
         logger.info("Blob already exists: %s", hash_hex)
         return hash_hex
 
-    fs.makedirs(_base_path, exist_ok=True)
-    with fs.open(path, "wb") as f:
-        f.write(data)
+    await fs._makedirs(_base_path, exist_ok=True)
+    await fs._pipe_file(path, data)
 
     logger.info("Stored blob: %s (%d bytes)", hash_hex, len(data))
     return hash_hex

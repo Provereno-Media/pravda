@@ -70,64 +70,33 @@ async def capture_page(
     logger.info("Lifecycle events for %s: %s", url, lifecycle_events)
 
     # --- Capture page content -------------------------------------------
-    mhtml_bytes: bytes | None = None
-    screenshot_bytes: bytes | None = None
-    rendered_html: bytes | None = None
-    inner_text: bytes | None = None
-
-    # Capture only if the DOM finished parsing — otherwise there is no
-    # meaningful content. This holds whether the condition was met or it
-    # timed out after DOMContentLoaded (e.g. a stalled subresource).
-    should_capture = "DOMContentLoaded" in lifecycle_events
-
-    if should_capture:
-        try:
-            mhtml_response = await cdp.send("Page.captureSnapshot", {"format": "mhtml"})
-            mhtml_bytes = mhtml_response["data"].encode("utf-8")
-        except Exception as exc:
-            logger.warning("Failed to capture MHTML for %s: %s", url, exc)
-
-        if "load" in lifecycle_events:
-            try:
-                screenshot_bytes = await page.screenshot(full_page=True)
-            except PlaywrightTimeout:
-                logger.warning("Timeout capturing screenshot for %s", url)
-        else:
-            logger.warning("Skipping screenshot for %s — page never reached load", url)
-
-        try:
-            rendered_html = await page.content()
-            rendered_html = rendered_html.encode("utf-8")
-        except Exception as exc:
-            logger.warning("Failed to capture HTML for %s: %s", url, exc)
-
-        try:
-            inner_text = (await page.inner_text("body")).encode("utf-8")
-        except PlaywrightTimeout:
-            logger.warning("Timeout capturing inner text for %s", url)
-    else:
-        logger.warning(
-            "Skipping captures for %s — page never reached DOMContentLoaded", url
-        )
-
-    # --- Store blobs ----------------------------------------------------
     contents: list[Content] = []
-    if mhtml_bytes is not None:
-        contents.append(
-            Content(content_type="multipart/related", hash=await put_blob(mhtml_bytes))
-        )
-    if screenshot_bytes is not None:
-        contents.append(
-            Content(content_type="image/png", hash=await put_blob(screenshot_bytes))
-        )
-    if rendered_html is not None:
-        contents.append(
-            Content(content_type="text/html", hash=await put_blob(rendered_html))
-        )
-    if inner_text is not None:
-        contents.append(
-            Content(content_type="text/plain", hash=await put_blob(inner_text))
-        )
+
+    async def capture(content_type: str, gate: str, fn) -> None:
+        """Capture via `fn` and store the blob, gated on a lifecycle event."""
+        if gate not in lifecycle_events:
+            logger.warning(
+                "Skipping %s for %s — never reached %s", content_type, url, gate
+            )
+            return
+        try:
+            data = await fn()
+            if isinstance(data, str):
+                data = data.encode()
+            contents.append(
+                Content(content_type=content_type, hash=await put_blob(data))
+            )
+        except Exception as exc:
+            logger.warning("Failed to capture %s for %s: %s", content_type, url, exc)
+
+    async def mhtml() -> str:
+        result = await cdp.send("Page.captureSnapshot", {"format": "mhtml"})
+        return result["data"]
+
+    await capture("multipart/related", "DOMContentLoaded", mhtml)
+    await capture("image/png", "load", lambda: page.screenshot(full_page=True))
+    await capture("text/html", "DOMContentLoaded", page.content)
+    await capture("text/plain", "DOMContentLoaded", lambda: page.inner_text("body"))
 
     # --- Persist snapshot row -------------------------------------------
     snapshot = Snapshot(
