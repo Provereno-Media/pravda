@@ -40,39 +40,16 @@ async def capture_page(page: Page, url: str, session: AsyncSession) -> Snapshot:
 
     # Persist snapshot row
     snapshot = Snapshot(url=url, http_status=http_status)
+    snapshot.contents = [
+        Content(content_type="multipart/related", hash=mhtml_hash),
+        Content(content_type="image/png", hash=screenshot_hash),
+        Content(content_type="text/html", hash=rendered_html_hash),
+        Content(content_type="text/plain", hash=inner_text_hash),
+    ]
+    snapshot.headers = [
+        Header(name=name, value=value) for name, value in resp_headers.items()
+    ]
     session.add(snapshot)
-    await session.flush()
-
-    session.add(
-        Content(
-            snapshot_id=snapshot.id, content_type="multipart/related", hash=mhtml_hash
-        )
-    )
-    session.add(
-        Content(
-            snapshot_id=snapshot.id,
-            content_type="image/png",
-            hash=screenshot_hash,
-        )
-    )
-    session.add(
-        Content(
-            snapshot_id=snapshot.id,
-            content_type="text/html",
-            hash=rendered_html_hash,
-        )
-    )
-    session.add(
-        Content(
-            snapshot_id=snapshot.id,
-            content_type="text/plain",
-            hash=inner_text_hash,
-        )
-    )
-
-    for name, value in resp_headers.items():
-        session.add(Header(snapshot_id=snapshot.id, name=name, value=value))
-
     await session.flush()
     logger.info("Saved snapshot %s for %s", snapshot.id, url)
 
