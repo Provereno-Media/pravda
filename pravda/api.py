@@ -15,8 +15,8 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from pravda.capture import capture_page
-from pravda.db import ConditionType, Snapshot, get_session, init_db
+from pravda.capture import CaptureResult, capture_page
+from pravda.db import ConditionType, Content, Header, Snapshot, get_session, init_db
 from pravda.storage import content_path
 
 LifecycleWait = Literal["load", "domcontentloaded", "networkidle", "commit"]
@@ -196,29 +196,47 @@ async def create_snapshot(
             context = await browser.new_context()
             page = await context.new_page()
 
-            snapshot = await capture_page(
+            result = await capture_page(
                 page,
                 str(body.url),
-                session,
                 condition_type=body.condition_type,
                 condition=body.condition,
             )
 
             await context.close()
     except PlaywrightError as e:
-        error = e.message
-        snapshot = Snapshot(
-            url=str(body.url),
+        # Couldn't even reach the browser — record an empty, failed result.
+        result = CaptureResult(
             http_status=None,
-            error=error,
-            condition_type=body.condition_type,
-            condition=body.condition,
+            error=e.message,
             condition_met=False,
             lifecycle_events=[],
+            headers={},
             contents=[],
-            headers=[],
         )
-        session.add(snapshot)
 
+    snapshot = _build_snapshot(body, result)
+    session.add(snapshot)
     await session.commit()
+    logger.info("Saved snapshot %s for %s", snapshot.id, snapshot.url)
     return _snapshot_out(snapshot)
+
+
+def _build_snapshot(body: SnapshotCreate, result: CaptureResult) -> Snapshot:
+    """Map captured evidence onto a persistable ``Snapshot`` row."""
+    snapshot = Snapshot(
+        url=str(body.url),
+        http_status=result.http_status,
+        error=result.error,
+        condition_type=body.condition_type,
+        condition=body.condition,
+        condition_met=result.condition_met,
+        lifecycle_events=result.lifecycle_events,
+    )
+    snapshot.contents = [
+        Content(content_type=c.content_type, hash=c.hash) for c in result.contents
+    ]
+    snapshot.headers = [
+        Header(name=name, value=value) for name, value in result.headers.items()
+    ]
+    return snapshot

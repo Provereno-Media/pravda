@@ -1,10 +1,10 @@
 import logging
+from dataclasses import dataclass
 
-from playwright.async_api import Page
+from playwright.async_api import CDPSession, Page
 from playwright.async_api import TimeoutError as PlaywrightTimeout
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from pravda.db import ConditionType, Content, Header, Snapshot
+from pravda.db import ConditionType
 from pravda.storage import put_blob
 
 logger = logging.getLogger(__name__)
@@ -16,47 +16,102 @@ NAV_TIMEOUT_MS = 10_000
 CONDITION_TIMEOUT_MS = 30_000
 
 
+@dataclass
+class CapturedContent:
+    """A single stored artifact: its MIME type and content hash."""
+
+    content_type: str
+    hash: str
+
+
+@dataclass
+class CaptureResult:
+    """Pure evidence captured from a page — no persistence concerns."""
+
+    http_status: int | None
+    error: str | None
+    condition_met: bool
+    lifecycle_events: list[str]
+    headers: dict[str, str]
+    contents: list[CapturedContent]
+
+
 async def capture_page(
     page: Page,
     url: str,
-    session: AsyncSession,
     condition_type: ConditionType = ConditionType.lifecycle,
     condition: str = "load",
     condition_timeout_ms: int = CONDITION_TIMEOUT_MS,
-) -> Snapshot:
-    """Navigate to *url*, capture evidence, store blobs, persist to *session*.
+) -> CaptureResult:
+    """Navigate to *url* and capture evidence: HTTP response, lifecycle
+    events, and MHTML/screenshot/HTML/text blobs.
 
-    Returns the ``Snapshot`` row (flushed, not committed — caller decides).
+    Returns the evidence as a ``CaptureResult``. Storing it is the caller's
+    job — this function never touches the database.
     """
-    http_status: int | None = None
-    resp_headers: dict[str, str] = {}
-    error: str | None = None
-    lifecycle_events: list[str] = []
+    cdp, lifecycle_events = await _track_lifecycle(page)
 
-    # --- CDP session: lifecycle tracking + MHTML capture ----------------
+    nav = await _navigate(page, url, condition_type, condition, condition_timeout_ms)
+    logger.info("Lifecycle events for %s: %s", url, lifecycle_events)
+
+    contents = await _capture_contents(page, cdp, url, lifecycle_events)
+
+    return CaptureResult(
+        http_status=nav.http_status,
+        error=nav.error,
+        condition_met=nav.condition_met,
+        lifecycle_events=lifecycle_events,
+        headers=nav.headers,
+        contents=contents,
+    )
+
+
+async def _track_lifecycle(page: Page) -> tuple[CDPSession, list[str]]:
+    """Enable CDP lifecycle events and return the session plus a list that
+    accumulates event names (init, commit, DOMContentLoaded, load, …) as
+    they fire during navigation."""
     cdp = await page.context.new_cdp_session(page)
     await cdp.send("Page.enable", {})
     await cdp.send("Page.setLifecycleEventsEnabled", {"enabled": True})
-    cdp.on(
-        "Page.lifecycleEvent",
-        lambda params: lifecycle_events.append(params["name"]),
-    )
 
-    # --- Navigation: reach "commit" to grab the HTTP response, then wait
-    #     for the requested condition. Headers/status are captured between
-    #     the two steps, so a condition timeout still records the response.
-    condition_met = False
+    events: list[str] = []
+    cdp.on("Page.lifecycleEvent", lambda params: events.append(params["name"]))
+    return cdp, events
+
+
+@dataclass
+class _Navigation:
+    http_status: int | None
+    headers: dict[str, str]
+    condition_met: bool
+    error: str | None
+
+
+async def _navigate(
+    page: Page,
+    url: str,
+    condition_type: ConditionType,
+    condition: str,
+    condition_timeout_ms: int,
+) -> _Navigation:
+    """Navigate to *url*, then wait for the requested condition.
+
+    Status and headers are read at "commit" (first response), *before* the
+    condition wait — so a condition timeout still records the HTTP response.
+    """
+    http_status: int | None = None
+    headers: dict[str, str] = {}
     try:
         response = await page.goto(url, wait_until="commit", timeout=NAV_TIMEOUT_MS)
         http_status = response.status
-        raw = await response.all_headers()
-        resp_headers = {k.lower(): v for k, v in raw.items()}
+        headers = {k.lower(): v for k, v in (await response.all_headers()).items()}
 
         if condition_type is ConditionType.lifecycle:
             await page.wait_for_load_state(condition, timeout=condition_timeout_ms)
         else:
             await page.wait_for_selector(condition, timeout=condition_timeout_ms)
-        condition_met = True
+
+        return _Navigation(http_status, headers, condition_met=True, error=None)
     except PlaywrightTimeout as exc:
         logger.warning(
             "Timeout for %s (condition_type=%s, condition=%s): %s",
@@ -65,55 +120,52 @@ async def capture_page(
             condition,
             exc,
         )
-        error = str(exc)
+        return _Navigation(http_status, headers, condition_met=False, error=str(exc))
 
-    logger.info("Lifecycle events for %s: %s", url, lifecycle_events)
 
-    # --- Capture page content -------------------------------------------
-    contents: list[Content] = []
-
-    async def capture(content_type: str, gate: str, fn) -> None:
-        """Capture via `fn` and store the blob, gated on a lifecycle event."""
-        if gate not in lifecycle_events:
-            logger.warning(
-                "Skipping %s for %s — never reached %s", content_type, url, gate
-            )
-            return
-        try:
-            data = await fn()
-            if isinstance(data, str):
-                data = data.encode()
-            contents.append(
-                Content(content_type=content_type, hash=await put_blob(data))
-            )
-        except Exception as exc:
-            logger.warning("Failed to capture %s for %s: %s", content_type, url, exc)
-
+# Each artifact is gated on a lifecycle event: we only attempt the capture
+# if the page actually reached that point, otherwise it would error or hang.
+async def _capture_contents(
+    page: Page,
+    cdp: CDPSession,
+    url: str,
+    lifecycle_events: list[str],
+) -> list[CapturedContent]:
     async def mhtml() -> str:
         result = await cdp.send("Page.captureSnapshot", {"format": "mhtml"})
         return result["data"]
 
-    await capture("multipart/related", "DOMContentLoaded", mhtml)
-    await capture("image/png", "load", lambda: page.screenshot(full_page=True))
-    await capture("text/html", "DOMContentLoaded", page.content)
-    await capture("text/plain", "DOMContentLoaded", lambda: page.inner_text("body"))
-
-    # --- Persist snapshot row -------------------------------------------
-    snapshot = Snapshot(
-        url=url,
-        http_status=http_status,
-        error=error,
-        condition_type=condition_type,
-        condition=condition,
-        condition_met=condition_met,
-        lifecycle_events=lifecycle_events,
-    )
-    snapshot.contents = contents
-    snapshot.headers = [
-        Header(name=name, value=value) for name, value in resp_headers.items()
+    specs = [
+        ("multipart/related", "DOMContentLoaded", mhtml),
+        ("image/png", "load", lambda: page.screenshot(full_page=True)),
+        ("text/html", "DOMContentLoaded", page.content),
+        ("text/plain", "DOMContentLoaded", lambda: page.inner_text("body")),
     ]
-    session.add(snapshot)
-    await session.flush()
-    logger.info("Saved snapshot %s for %s", snapshot.id, url)
 
-    return snapshot
+    contents = []
+    for content_type, gate, fn in specs:
+        content = await _capture_one(content_type, gate, fn, url, lifecycle_events)
+        if content is not None:
+            contents.append(content)
+    return contents
+
+
+async def _capture_one(
+    content_type: str,
+    gate: str,
+    fn,
+    url: str,
+    lifecycle_events: list[str],
+) -> CapturedContent | None:
+    """Capture one artifact via *fn* and store the blob, gated on *gate*."""
+    if gate not in lifecycle_events:
+        logger.warning("Skipping %s for %s — never reached %s", content_type, url, gate)
+        return None
+    try:
+        data = await fn()
+        if isinstance(data, str):
+            data = data.encode()
+        return CapturedContent(content_type=content_type, hash=await put_blob(data))
+    except Exception as exc:
+        logger.warning("Failed to capture %s for %s: %s", content_type, url, exc)
+        return None
