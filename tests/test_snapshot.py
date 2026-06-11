@@ -46,6 +46,8 @@ async def test_capture_page_persists_snapshot(db_session):
     assert str(loaded.id) == str(snapshot.id)
     assert loaded.url == "https://example.com"
     assert loaded.http_status == 200
+    assert loaded.condition == "load"
+    assert loaded.condition_met is True
 
     content_types = {c.content_type for c in loaded.contents}
     assert content_types == {
@@ -64,3 +66,55 @@ async def test_capture_page_persists_snapshot(db_session):
 
     header_names = {h.name for h in loaded.headers}
     assert "content-type" in header_names
+
+
+@pytest.mark.asyncio
+async def test_capture_page_timeout_stores_partial_snapshot(db_session):
+    """A load-timeout still captures artifacts with condition_met=False."""
+
+    async with async_playwright() as p:
+        browser = await p.chromium.connect("ws://localhost:3000")
+        context = await browser.new_context()
+        page = await context.new_page()
+
+        # Route that never fulfills — causes goto to timeout
+        async def hang_forever(route):
+            pass  # never call route.fulfill/continue/abort
+
+        await page.route("https://timeout.example.com", hang_forever)
+
+        # Also route the favicon (browsers auto-request it) to avoid hangs
+        await page.route("**/favicon.ico", lambda route: route.abort())
+
+        # Set a very short timeout so the test doesn't wait 30s
+        page.set_default_timeout(500)  # 500ms
+
+        snapshot = await capture_page(
+            page, "https://timeout.example.com", db_session, wait_until="load"
+        )
+
+        await context.close()
+
+    # Read back from the DB
+    stmt = (
+        select(Snapshot)
+        .where(Snapshot.id == snapshot.id)
+        .options(selectinload(Snapshot.contents), selectinload(Snapshot.headers))
+    )
+    result = await db_session.execute(stmt)
+    loaded = result.scalar_one()
+
+    assert loaded.url == "https://timeout.example.com"
+    assert loaded.http_status is None  # unknown — goto never returned
+    assert loaded.condition == "load"
+    assert loaded.condition_met is False
+    assert loaded.error is not None  # Playwright timeout message
+
+    # Artifacts should still be captured (page was open, just not fully loaded)
+    content_types = {c.content_type for c in loaded.contents}
+    assert content_types == {
+        "multipart/related",
+        "image/png",
+        "text/html",
+        "text/plain",
+    }

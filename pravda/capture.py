@@ -1,6 +1,7 @@
 import logging
 
 from playwright.async_api import Page
+from playwright.async_api import TimeoutError as PlaywrightTimeout
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from pravda.db import Content, Header, Snapshot
@@ -9,19 +10,26 @@ from pravda.storage import put_blob
 logger = logging.getLogger(__name__)
 
 
-async def capture_page(page: Page, url: str, session: AsyncSession) -> Snapshot:
+async def capture_page(
+    page: Page, url: str, session: AsyncSession, wait_until: str = "load"
+) -> Snapshot:
     """Navigate to *url*, capture evidence, store blobs, persist to *session*.
 
     Returns the ``Snapshot`` row (flushed, not committed — caller decides).
     """
-    response = await page.goto(url, wait_until="load")
-    http_status = response.status if response else 0
-
-    # Collect response headers
+    condition_met = True
+    http_status: int | None = None
     resp_headers: dict[str, str] = {}
-    if response:
-        raw = await response.all_headers()
-        resp_headers = {k.lower(): v for k, v in raw.items()}
+
+    try:
+        response = await page.goto(url, wait_until=wait_until)
+        if response:
+            http_status = response.status
+            raw = await response.all_headers()
+            resp_headers = {k.lower(): v for k, v in raw.items()}
+    except PlaywrightTimeout:
+        logger.warning("Timeout waiting for %s (condition=%s)", url, wait_until)
+        condition_met = False
 
     cdp = await page.context.new_cdp_session(page)
     mhtml_response = await cdp.send("Page.captureSnapshot", {"format": "mhtml"})
@@ -39,7 +47,12 @@ async def capture_page(page: Page, url: str, session: AsyncSession) -> Snapshot:
     inner_text_hash = await put_blob(inner_text)
 
     # Persist snapshot row
-    snapshot = Snapshot(url=url, http_status=http_status)
+    snapshot = Snapshot(
+        url=url,
+        http_status=http_status,
+        condition=wait_until,
+        condition_met=condition_met,
+    )
     snapshot.contents = [
         Content(content_type="multipart/related", hash=mhtml_hash),
         Content(content_type="image/png", hash=screenshot_hash),

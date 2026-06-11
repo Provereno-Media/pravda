@@ -5,7 +5,6 @@ import uuid
 
 from fastapi import Depends, FastAPI, Query
 from playwright.async_api import Error as PlaywrightError
-from playwright.async_api import TimeoutError as PlaywrightTimeout
 from playwright.async_api import async_playwright
 from pydantic import BaseModel, HttpUrl
 from sqlalchemy import func, select
@@ -35,6 +34,7 @@ async def startup() -> None:
 
 class SnapshotCreate(BaseModel):
     url: HttpUrl
+    wait_until: str = "load"
 
 
 class ContentOut(BaseModel):
@@ -51,8 +51,10 @@ class SnapshotOut(BaseModel):
     id: uuid.UUID
     url: str
     captured_at: str
-    http_status: int
+    http_status: int | None = None
     error: str | None = None
+    condition: str
+    condition_met: bool
     contents: list[ContentOut]
     headers: list[HeaderOut]
 
@@ -109,6 +111,8 @@ def _snapshot_out(s: Snapshot) -> SnapshotOut:
         captured_at=s.captured_at.isoformat(),
         http_status=s.http_status,
         error=s.error,
+        condition=s.condition,
+        condition_met=s.condition_met,
         contents=[
             ContentOut(content_type=c.content_type, path=content_path(c.hash))
             for c in s.contents
@@ -122,6 +126,7 @@ async def create_snapshot(
     body: SnapshotCreate,
     session: AsyncSession = Depends(get_session),
 ) -> SnapshotOut:
+    error: str | None = None
     try:
         async with async_playwright() as p:
             browser = await p.chromium.connect(
@@ -135,14 +140,22 @@ async def create_snapshot(
             context = await browser.new_context()
             page = await context.new_page()
 
-            snapshot = await capture_page(page, str(body.url), session)
+            snapshot = await capture_page(
+                page, str(body.url), session, wait_until=body.wait_until
+            )
 
             await context.close()
-    except PlaywrightTimeout as e:
-        snapshot = Snapshot(url=str(body.url), http_status=504, error=e.message)
-        session.add(snapshot)
     except PlaywrightError as e:
-        snapshot = Snapshot(url=str(body.url), http_status=502, error=e.message)
+        error = e.message
+        snapshot = Snapshot(
+            url=str(body.url),
+            http_status=None,
+            error=error,
+            condition=body.wait_until,
+            condition_met=False,
+            contents=[],
+            headers=[],
+        )
         session.add(snapshot)
 
     await session.commit()

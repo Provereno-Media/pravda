@@ -33,6 +33,8 @@ async def _insert_snapshot(
         url=url,
         captured_at=captured_at,
         http_status=http_status,
+        condition="load",
+        condition_met=True,
     )
     snapshot.contents = [
         Content(content_type="text/html", hash="a" * 64, snapshot=snapshot),

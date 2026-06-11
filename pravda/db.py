@@ -3,7 +3,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, Integer, Text, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -26,8 +26,10 @@ class Snapshot(Base):
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-    http_status: Mapped[int] = mapped_column(Integer, nullable=False)
+    http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    condition: Mapped[str] = mapped_column(Text, nullable=False)
+    condition_met: Mapped[bool] = mapped_column(Boolean, nullable=False)
 
     contents: Mapped[list["Content"]] = relationship(back_populates="snapshot")
     headers: Mapped[list["Header"]] = relationship(back_populates="snapshot")
