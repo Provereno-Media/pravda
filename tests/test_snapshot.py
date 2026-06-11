@@ -95,10 +95,10 @@ async def test_http_commit_captured_when_load_times_out(browser: Browser):
     context = await browser.new_context()
     page = await context.new_page()
 
-    # Block the image so `load` never fires, but serve the HTML fine.
+    # Hang the image so `load` never fires, but serve the HTML fine.
     await page.route(
         "https://slow.example.com/slow-resource.png",
-        lambda route: asyncio.sleep(60),  # never resolves
+        lambda route: asyncio.Event().wait(),  # never resolves
     )
     await page.route(
         "https://slow.example.com",
@@ -108,12 +108,17 @@ async def test_http_commit_captured_when_load_times_out(browser: Browser):
         ),
     )
 
-    result = await capture_page(
-        page,
-        "https://slow.example.com",
-        condition="load",
-        condition_timeout_ms=1,  # load will never fire; don't wait long
-    )
+    # Wait for the real DOMContentLoaded, then inject the load timeout —
+    # deterministic, no wall-clock race.
+    real_wait_for_load_state = page.wait_for_load_state
+
+    async def wait_then_timeout(state, **kwargs):
+        await real_wait_for_load_state("domcontentloaded")
+        raise PlaywrightTimeout("load timed out")
+
+    page.wait_for_load_state = wait_then_timeout
+
+    result = await capture_page(page, "https://slow.example.com", condition="load")
 
     await context.close()
 
