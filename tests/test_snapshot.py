@@ -90,7 +90,7 @@ async def test_http_commit_captured_when_load_times_out(browser: Browser):
 
     The two-step navigation means we get the HTTP response even when the
     page never finishes loading. Captures still run because DOMContentLoaded
-    fires (the DOM parses fine — only the `load` event stalls).
+    fires (the DOM parses fine — only the `load` event stalls on the image).
     """
     context = await browser.new_context()
     page = await context.new_page()
@@ -108,17 +108,16 @@ async def test_http_commit_captured_when_load_times_out(browser: Browser):
         ),
     )
 
-    # Wait for the real DOMContentLoaded, then inject the load timeout —
-    # deterministic, no wall-clock race.
-    real_wait_for_load_state = page.wait_for_load_state
-
-    async def wait_then_timeout(state, **kwargs):
-        await real_wait_for_load_state("domcontentloaded")
-        raise PlaywrightTimeout("load timed out")
-
-    page.wait_for_load_state = wait_then_timeout
-
-    result = await capture_page(page, "https://slow.example.com", condition="load")
+    # `load` waits on the blocked image and times out; DOMContentLoaded fires
+    # almost immediately. Both ride the same CDP lifecycle stream, so the
+    # timeout deterministically leaves DOMContentLoaded already recorded — no
+    # wall-clock race. A short timeout just keeps the test fast.
+    result = await capture_page(
+        page,
+        "https://slow.example.com",
+        condition="load",
+        condition_timeout_ms=2000,
+    )
 
     await context.close()
 

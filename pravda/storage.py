@@ -25,11 +25,11 @@ async def put_blob(data: bytes) -> str:
     path = content_path(hash_hex)
 
     if await fs._exists(path):
-        logger.info("Blob already exists: %s", hash_hex)
+        logger.debug("Blob already exists: %s", hash_hex)
         return hash_hex
 
     await fs._makedirs(_base_path, exist_ok=True)
     await fs._pipe_file(path, data)
 
-    logger.info("Stored blob: %s (%d bytes)", hash_hex, len(data))
+    logger.debug("Stored blob: %s (%d bytes)", hash_hex, len(data))
     return hash_hex

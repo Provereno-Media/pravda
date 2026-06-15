@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from dataclasses import dataclass
 
@@ -49,9 +50,17 @@ async def capture_page(
     Returns the evidence as a ``CaptureResult``. Storing it is the caller's
     job — this function never touches the database.
     """
-    cdp, lifecycle_events = await _track_lifecycle(page)
+    cdp, lifecycle_events, waiters = await _track_lifecycle(page)
 
-    nav = await _navigate(page, url, condition_type, condition, condition_timeout_ms)
+    nav = await _navigate(
+        page,
+        lifecycle_events,
+        waiters,
+        url,
+        condition_type,
+        condition,
+        condition_timeout_ms,
+    )
     logger.info("Lifecycle events for %s: %s", url, lifecycle_events)
 
     contents = await _capture_contents(page, cdp, url, lifecycle_events)
@@ -66,17 +75,52 @@ async def capture_page(
     )
 
 
-async def _track_lifecycle(page: Page) -> tuple[CDPSession, list[str]]:
-    """Enable CDP lifecycle events and return the session plus a list that
-    accumulates event names (init, commit, DOMContentLoaded, load, …) as
-    they fire during navigation."""
+async def _track_lifecycle(
+    page: Page,
+) -> tuple[CDPSession, list[str], dict[str, asyncio.Event]]:
+    """Enable CDP lifecycle events and return the session, a list that
+    accumulates event names (init, commit, DOMContentLoaded, load, …) as they
+    fire during navigation, and a registry of per-name waiters.
+
+    This single ``Page.lifecycleEvent`` stream is the only channel we use:
+    capture gating reads ``events``, and condition-waiting blocks on
+    ``waiters`` — both fed by the one handler below. When a wait unblocks, the
+    event is already in ``events``, so there is no cross-session race.
+    """
     cdp = await page.context.new_cdp_session(page)
     await cdp.send("Page.enable", {})
     await cdp.send("Page.setLifecycleEventsEnabled", {"enabled": True})
 
     events: list[str] = []
-    cdp.on("Page.lifecycleEvent", lambda params: events.append(params["name"]))
-    return cdp, events
+    waiters: dict[str, asyncio.Event] = {}
+
+    def on_event(params) -> None:
+        name = params["name"]
+        events.append(name)
+        waiter = waiters.get(name)
+        if waiter is not None:
+            waiter.set()
+
+    cdp.on("Page.lifecycleEvent", on_event)
+    return cdp, events, waiters
+
+
+async def _wait_for_lifecycle(
+    events: list[str],
+    waiters: dict[str, asyncio.Event],
+    name: str,
+    timeout_ms: int,
+) -> None:
+    """Block until the CDP lifecycle event *name* has fired, or time out.
+
+    Mirrors how Playwright's own ``wait_for_load_state`` resolves — "return if
+    already fired, else await its arrival" — but against our session's stream,
+    so completion guarantees *name* is present in ``events`` for gating.
+    """
+    if name in events:
+        return
+    waiter = waiters.setdefault(name, asyncio.Event())
+    await asyncio.wait_for(waiter.wait(), timeout_ms / 1000)
 
 
 @dataclass
@@ -89,6 +133,8 @@ class _Navigation:
 
 async def _navigate(
     page: Page,
+    lifecycle_events: list[str],
+    waiters: dict[str, asyncio.Event],
     url: str,
     condition_type: ConditionType,
     condition: str,
@@ -98,6 +144,9 @@ async def _navigate(
 
     Status and headers are read at "commit" (first response), *before* the
     condition wait — so a condition timeout still records the HTTP response.
+
+    Lifecycle conditions wait on our own CDP event stream (``lifecycle_events``
+    / ``waiters``); selector conditions use Playwright's ``wait_for_selector``.
     """
     http_status: int | None = None
     headers: dict[str, str] = {}
@@ -107,20 +156,25 @@ async def _navigate(
         headers = {k.lower(): v for k, v in (await response.all_headers()).items()}
 
         if condition_type is ConditionType.lifecycle:
-            await page.wait_for_load_state(condition, timeout=condition_timeout_ms)
+            await _wait_for_lifecycle(
+                lifecycle_events, waiters, condition, condition_timeout_ms
+            )
         else:
             await page.wait_for_selector(condition, timeout=condition_timeout_ms)
 
         return _Navigation(http_status, headers, condition_met=True, error=None)
-    except PlaywrightTimeout as exc:
+    except (PlaywrightTimeout, asyncio.TimeoutError) as exc:
+        error = str(exc) or (
+            f"Timeout {condition_timeout_ms}ms exceeded waiting for '{condition}'"
+        )
         logger.warning(
             "Timeout for %s (condition_type=%s, condition=%s): %s",
             url,
             condition_type.value,
             condition,
-            exc,
+            error,
         )
-        return _Navigation(http_status, headers, condition_met=False, error=str(exc))
+        return _Navigation(http_status, headers, condition_met=False, error=error)
 
 
 # Each artifact is gated on a lifecycle event: we only attempt the capture

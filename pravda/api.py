@@ -29,6 +29,11 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    logging.basicConfig(
+        filename="pravda.log",
+        level=logging.DEBUG,
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
     await init_db()
     logger.info("Database initialized")
     yield
@@ -56,9 +61,9 @@ class SnapshotCreate(BaseModel):
         str,
         Field(
             description=(
-                "Depends on condition_type: for 'lifecycle' one of "
-                "'load', 'domcontentloaded', 'networkidle', 'commit'. "
-                "For 'selector', a CSS selector to wait for."
+                "Depends on condition_type: for 'lifecycle' a CDP lifecycle "
+                "event name, one of 'load', 'DOMContentLoaded', 'networkIdle', "
+                "'commit'. For 'selector', a CSS selector to wait for."
             )
         ),
     ] = "load"
@@ -66,7 +71,7 @@ class SnapshotCreate(BaseModel):
     @model_validator(mode="after")
     def _validate_condition(self) -> "SnapshotCreate":
         if self.condition_type is ConditionType.lifecycle:
-            valid = {"load", "domcontentloaded", "networkidle", "commit"}
+            valid = {"load", "DOMContentLoaded", "networkIdle", "commit"}
             if self.condition not in valid:
                 raise ValueError(
                     f"condition must be one of {valid} "
@@ -183,6 +188,12 @@ async def create_snapshot(
     body: SnapshotCreate,
     session: AsyncSession = Depends(get_session),
 ) -> SnapshotOut:
+    logger.info(
+        "Capturing %s (condition=%s:%s)",
+        body.url,
+        body.condition_type.value,
+        body.condition,
+    )
     try:
         async with async_playwright() as p:
             browser = await p.chromium.connect(
@@ -206,6 +217,7 @@ async def create_snapshot(
             await context.close()
     except PlaywrightError as e:
         # Couldn't even reach the browser — record an empty, failed result.
+        logger.error("Browser error for %s: %s", body.url, e.message)
         result = CaptureResult(
             http_status=None,
             error=e.message,
@@ -218,7 +230,15 @@ async def create_snapshot(
     snapshot = _build_snapshot(body, result)
     session.add(snapshot)
     await session.commit()
-    logger.info("Saved snapshot %s for %s", snapshot.id, snapshot.url)
+    logger.info(
+        "Captured %s id=%s: status=%s condition_met=%s artifacts=%d error=%s",
+        snapshot.url,
+        snapshot.id,
+        result.http_status,
+        result.condition_met,
+        len(result.contents),
+        result.error,
+    )
     return _snapshot_out(snapshot)
 
 
