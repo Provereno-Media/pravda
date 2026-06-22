@@ -256,7 +256,11 @@ async def create_snapshot(
             condition_met=False,
             lifecycle_events=[],
             headers={},
-            contents=[],
+            plaintext_hash=None,
+            rendered_html_hash=None,
+            screenshot_hash=None,
+            blob_hash=None,
+            blob_content_type=None,
         )
 
     snapshot = _build_snapshot(body, result)
