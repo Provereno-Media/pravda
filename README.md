@@ -2,6 +2,9 @@
 
 Pravda is the evidence layer — a service that other services build on. It uses Playwright to capture and store MHTML archives and full-page screenshots of web pages, along with response headers and snapshot metadata. It turns live web pages into durable, addressable evidence that can be inspected, diffed, and reasoned over long after the original page has changed.
 
+# Pravda-chromium branch
+If you want to test it locally on an Apple Silicon, use this [branch](https://github.com/Provereno-Media/pravda/tree/pravda-chromium)
+
 ## What it does (v0)
 
 - Captures web pages as MHTML archives + screenshots
