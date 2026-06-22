@@ -183,45 +183,48 @@ class CapturedArtifacts:
     blob_content_type: str | None
 
 
-# Each artifact is gated on a lifecycle event: we only attempt the capture
-# if the page actually reached that point, otherwise it would error or hang.
+# Every artifact is gated on DOMContentLoaded: we only attempt the capture
+# once the page has parsed its DOM, otherwise it would error or hang.
 async def _capture_artifacts(
     page: Page,
     lifecycle: Lifecycle,
     url: str,
 ) -> CapturedArtifacts:
+    # If the page never settled (load didn't fire), cancel any hanging
+    # requests so it reaches a terminal state — otherwise the screenshot and
+    # MHTML snapshot could stall on resources that never arrive. This mirrors
+    # hitting the browser's stop button.
+    if "load" not in lifecycle.fired:
+        await lifecycle.cdp.send("Page.stopLoading", {})
+
     async def capture_mhtml() -> str:
         result = await asyncio.wait_for(
             lifecycle.cdp.send("Page.captureSnapshot", {"format": "mhtml"}),
-            CAPTURE_TIMEOUT_MS / 1000,
+            CAPTURE_TIMEOUT_MS,
         )
         return result["data"]
 
     plaintext_hash = await _capture_one(
         "plaintext",
         lambda: page.inner_text("body", timeout=CAPTURE_TIMEOUT_MS),
-        "DOMContentLoaded",
         url,
         lifecycle.fired,
     )
     rendered_html_hash = await _capture_one(
         "rendered_html",
         lambda: page.content(),
-        "DOMContentLoaded",
         url,
         lifecycle.fired,
     )
     screenshot_hash = await _capture_one(
         "screenshot",
         lambda: page.screenshot(full_page=True, timeout=CAPTURE_TIMEOUT_MS),
-        "load",
         url,
         lifecycle.fired,
     )
     blob_hash = await _capture_one(
         "blob",
         capture_mhtml,
-        "DOMContentLoaded",
         url,
         lifecycle.fired,
     )
@@ -238,13 +241,15 @@ async def _capture_artifacts(
 async def _capture_one(
     name: str,
     callback,
-    gate: str,
     url: str,
     lifecycle_events: list[str],
 ) -> str | None:
-    """Capture one artifact via *callback* and store the blob, gated on *gate*."""
-    if gate not in lifecycle_events:
-        logger.warning("Skipping %s for %s — never reached %s", name, url, gate)
+    """Capture one artifact via *callback* and store the blob.
+
+    Gated on DOMContentLoaded — skipped if the page never parsed its DOM.
+    """
+    if "DOMContentLoaded" not in lifecycle_events:
+        logger.warning("Skipping %s for %s — never reached DOMContentLoaded", name, url)
         return None
     try:
         data = await callback()

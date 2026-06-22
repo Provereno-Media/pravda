@@ -124,11 +124,12 @@ async def test_http_commit_captured_when_load_times_out(browser: Browser):
     assert result.condition_met is False
     assert result.error is not None
 
-    # DOMContentLoaded fired, so DOM-gated captures ran; load didn't, so the
-    # screenshot (gated on load) was skipped.
+    # DOMContentLoaded fired, so every capture ran. The screenshot went
+    # through despite load timing out: pending requests are stopped first so
+    # the page settles into a capturable state.
     assert result.plaintext_hash is not None
     assert result.rendered_html_hash is not None
-    assert result.screenshot_hash is None
+    assert result.screenshot_hash is not None
     assert result.blob_hash is not None
     assert result.blob_content_type == "multipart/related"
 
