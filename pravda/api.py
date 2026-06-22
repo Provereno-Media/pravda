@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from pravda.capture import CaptureResult, capture_page
-from pravda.db import ConditionType, Content, Header, Snapshot, get_session, init_db
+from pravda.db import ConditionType, Header, Snapshot, get_session, init_db
 from pravda.storage import content_path
 
 LifecycleWait = Literal["load", "domcontentloaded", "networkidle", "commit"]
@@ -81,11 +81,6 @@ class SnapshotCreate(BaseModel):
         return self
 
 
-class ContentOut(BaseModel):
-    content_type: str = Field(description="MIME type of the captured content")
-    path: str = Field(description="File path where the content is stored")
-
-
 class HeaderOut(BaseModel):
     name: str = Field(description="HTTP header name (lowercased)")
     value: str = Field(description="HTTP header value")
@@ -115,7 +110,26 @@ class SnapshotOut(BaseModel):
             "firstPaint, firstContentfulPaint, load)."
         ),
     )
-    contents: list[ContentOut] = Field(description="Captured content files")
+    plaintext: str | None = Field(
+        default=None,
+        description="Path to the captured plaintext (text/plain), or null",
+    )
+    rendered_html: str | None = Field(
+        default=None,
+        description="Path to the captured rendered HTML (text/html), or null",
+    )
+    screenshot: str | None = Field(
+        default=None,
+        description="Path to the captured full-page screenshot (image/png), or null",
+    )
+    blob: str | None = Field(
+        default=None,
+        description="Path to the captured blob (MHTML today; PDF/warc later), or null",
+    )
+    blob_content_type: str | None = Field(
+        default=None,
+        description="MIME type of the blob, or null when no blob was captured",
+    )
     headers: list[HeaderOut] = Field(description="Response headers from the page")
 
 
@@ -124,19 +138,10 @@ class SnapshotsOut(BaseModel):
     total: int = Field(description="Total number of snapshots for this URL")
 
 
-class HealthOut(BaseModel):
-    status: str = Field(description="Service health status")
-
-
 # --- Endpoints ---
 
 
 PAGE_SIZE = 10
-
-
-@app.get("/health")
-async def health() -> HealthOut:
-    return HealthOut(status="ok")
 
 
 @app.get("/snapshots", response_model=SnapshotsOut)
@@ -154,7 +159,7 @@ async def list_snapshots(
         .order_by(Snapshot.captured_at.desc())
         .offset((page - 1) * PAGE_SIZE)
         .limit(PAGE_SIZE)
-        .options(selectinload(Snapshot.contents), selectinload(Snapshot.headers))
+        .options(selectinload(Snapshot.headers))
     )
     rows = (await session.execute(rows_stmt)).scalars().all()
 
@@ -175,13 +180,13 @@ def _snapshot_out(snapshot: Snapshot) -> SnapshotOut:
         condition=snapshot.condition,
         condition_met=snapshot.condition_met,
         lifecycle_events=snapshot.lifecycle_events or [],
-        contents=[
-            ContentOut(
-                content_type=content.content_type,
-                path=content_path(content.hash),
-            )
-            for content in snapshot.contents
-        ],
+        plaintext=content_path(snapshot.plaintext) if snapshot.plaintext else None,
+        rendered_html=content_path(snapshot.rendered_html)
+        if snapshot.rendered_html
+        else None,
+        screenshot=content_path(snapshot.screenshot) if snapshot.screenshot else None,
+        blob=content_path(snapshot.blob) if snapshot.blob else None,
+        blob_content_type=snapshot.blob_content_type,
         headers=[
             HeaderOut(name=header.name, value=header.value)
             for header in snapshot.headers
@@ -236,14 +241,20 @@ async def create_snapshot(
     snapshot = _build_snapshot(body, result)
     session.add(snapshot)
     await session.commit()
+    artifacts = (
+        snapshot.plaintext,
+        snapshot.rendered_html,
+        snapshot.screenshot,
+        snapshot.blob,
+    )
     logger.info(
         "Captured %s id=%s: status=%s condition_met=%s artifacts=%d error=%s",
         snapshot.url,
         snapshot.id,
-        result.http_status,
-        result.condition_met,
-        len(result.contents),
-        result.error,
+        snapshot.http_status,
+        snapshot.condition_met,
+        sum(hash is not None for hash in artifacts),
+        snapshot.error,
     )
     return _snapshot_out(snapshot)
 
@@ -258,10 +269,12 @@ def _build_snapshot(body: SnapshotCreate, result: CaptureResult) -> Snapshot:
         condition=body.condition,
         condition_met=result.condition_met,
         lifecycle_events=result.lifecycle_events,
+        plaintext=result.plaintext_hash,
+        rendered_html=result.rendered_html_hash,
+        screenshot=result.screenshot_hash,
+        blob=result.blob_hash,
+        blob_content_type=result.blob_content_type,
     )
-    snapshot.contents = [
-        Content(content_type=c.content_type, hash=c.hash) for c in result.contents
-    ]
     snapshot.headers = [
         Header(name=name, value=value) for name, value in result.headers.items()
     ]

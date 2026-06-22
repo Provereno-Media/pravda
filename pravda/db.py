@@ -4,7 +4,16 @@ import uuid
 from collections.abc import AsyncGenerator
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Enum, ForeignKey, Integer, Text, func
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Integer,
+    Text,
+    func,
+)
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -24,6 +33,13 @@ class Base(DeclarativeBase):
 
 class Snapshot(Base):
     __tablename__ = "snapshot"
+    __table_args__ = (
+        CheckConstraint(
+            "(blob IS NULL AND blob_content_type IS NULL) "
+            "OR (blob IS NOT NULL AND blob_content_type IS NOT NULL)",
+            name="blob_content_type_present_iff_blob",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -43,23 +59,16 @@ class Snapshot(Base):
         ARRAY(Text), nullable=False, default=list
     )
 
-    contents: Mapped[list["Content"]] = relationship(back_populates="snapshot")
+    # Captured evidence. Three are fixed-MIME (their type is implicit); the
+    # blob is polymorphic (multipart/related today, application/pdf and others
+    # later), so its content type is recorded alongside its hash.
+    plaintext: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rendered_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    screenshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    blob: Mapped[str | None] = mapped_column(Text, nullable=True)
+    blob_content_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     headers: Mapped[list["Header"]] = relationship(back_populates="snapshot")
-
-
-class Content(Base):
-    __tablename__ = "content"
-
-    id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
-    )
-    snapshot_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("snapshot.id"), nullable=False
-    )
-    content_type: Mapped[str] = mapped_column(Text, nullable=False)
-    hash: Mapped[str] = mapped_column(Text, nullable=False)
-
-    snapshot: Mapped["Snapshot"] = relationship(back_populates="contents")
 
 
 class Header(Base):
