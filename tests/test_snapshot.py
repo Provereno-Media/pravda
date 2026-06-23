@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from pravda.api import SnapshotCreate, _build_snapshot
-from pravda.capture import CapturedContent, CaptureResult, capture_page
+from pravda.capture import CaptureResult, capture_page
 from pravda.db import Snapshot
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -39,20 +39,12 @@ async def test_capture_page_returns_evidence(browser: Browser):
     assert result.condition_met is True
     assert result.error is None
 
-    content_types = {c.content_type for c in result.contents}
-    assert content_types == {
-        "multipart/related",
-        "image/png",
-        "text/html",
-        "text/plain",
-    }
-
-    # The MHTML content hash should correspond to the fixture HTML
-    mhtml = next(c for c in result.contents if c.content_type == "multipart/related")
-    assert len(mhtml.hash) == 64  # sha256 hex
-
-    screenshot = next(c for c in result.contents if c.content_type == "image/png")
-    assert len(screenshot.hash) == 64
+    # All four artifacts captured, each a sha256 hex hash
+    assert len(result.plaintext_hash) == 64
+    assert len(result.rendered_html_hash) == 64
+    assert len(result.screenshot_hash) == 64
+    assert len(result.blob_hash) == 64
+    assert result.blob_content_type == "multipart/related"
 
     assert "content-type" in result.headers
 
@@ -81,7 +73,11 @@ async def test_capture_page_timeout_no_lifecycle_skips_captures(browser: Browser
     assert result.lifecycle_events == []
 
     # No lifecycle events fired, so captures were skipped
-    assert result.contents == []
+    assert result.plaintext_hash is None
+    assert result.rendered_html_hash is None
+    assert result.screenshot_hash is None
+    assert result.blob_hash is None
+    assert result.blob_content_type is None
 
 
 @pytest.mark.asyncio
@@ -128,10 +124,14 @@ async def test_http_commit_captured_when_load_times_out(browser: Browser):
     assert result.condition_met is False
     assert result.error is not None
 
-    # DOMContentLoaded fired, so captures were not skipped
-    content_types = {c.content_type for c in result.contents}
-    assert "multipart/related" in content_types
-    assert "text/html" in content_types
+    # DOMContentLoaded fired, so every capture ran. The screenshot went
+    # through despite load timing out: pending requests are stopped first so
+    # the page settles into a capturable state.
+    assert result.plaintext_hash is not None
+    assert result.rendered_html_hash is not None
+    assert result.screenshot_hash is not None
+    assert result.blob_hash is not None
+    assert result.blob_content_type == "multipart/related"
 
     # Headers were captured
     assert "content-type" in result.headers
@@ -152,7 +152,11 @@ async def test_captured_evidence_persists(db_session):
         condition_met=True,
         lifecycle_events=["init", "commit", "DOMContentLoaded", "load"],
         headers={"content-type": "text/html"},
-        contents=[CapturedContent(content_type="text/html", hash="a" * 64)],
+        plaintext_hash=None,
+        rendered_html_hash="a" * 64,
+        screenshot_hash=None,
+        blob_hash=None,
+        blob_content_type=None,
     )
 
     snapshot = _build_snapshot(body, result)
@@ -163,7 +167,7 @@ async def test_captured_evidence_persists(db_session):
         await db_session.execute(
             select(Snapshot)
             .where(Snapshot.id == snapshot.id)
-            .options(selectinload(Snapshot.contents), selectinload(Snapshot.headers))
+            .options(selectinload(Snapshot.headers))
         )
     ).scalar_one()
 
@@ -171,9 +175,11 @@ async def test_captured_evidence_persists(db_session):
     assert loaded.http_status == 200
     assert loaded.condition_met is True
     assert loaded.lifecycle_events == ["init", "commit", "DOMContentLoaded", "load"]
-    assert [(c.content_type, c.hash) for c in loaded.contents] == [
-        ("text/html", "a" * 64)
-    ]
+    assert loaded.rendered_html == "a" * 64
+    assert loaded.plaintext is None
+    assert loaded.screenshot is None
+    assert loaded.blob is None
+    assert loaded.blob_content_type is None
     assert [(h.name, h.value) for h in loaded.headers] == [
         ("content-type", "text/html")
     ]
